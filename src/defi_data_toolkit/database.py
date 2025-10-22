@@ -14,21 +14,27 @@ def _default_db_file() -> str:
 
 
 def create_connection(db_file: str):
-    """Cria uma conexão com o banco de dados SQLite especificado.
-
-    Note: db_file is required and must be provided by the caller. This removes
-    implicit dependency on a module-level config.
-    """
+    """Cria uma conexão com o banco de dados SQLite especificado."""
     conn = None
     try:
         if not db_file:
             raise ValueError("db_file must be provided to create_connection")
-        # Garante que o diretório do DB exista antes de tentar criar o arquivo
-        os.makedirs(os.path.dirname(db_file), exist_ok=True)
+
+        # --- GARANTA QUE ESTA PARTE ESTEJA EXATAMENTE ASSIM ---
+        db_dir = os.path.dirname(db_file)
+        logger.debug(f"Calculated db_dir: '{db_dir}' for db_file: '{db_file}'") # Linha de Debug
+        if db_dir: # Só executa makedirs se db_dir não for vazio
+            logger.debug(f"Attempting to create directory: '{db_dir}'")
+            os.makedirs(db_dir, exist_ok=True)
+        else:
+            logger.debug(f"Skipping makedirs because db_dir is empty.")
+        # --- FIM DA CORREÇÃO ---
+
         conn = sqlite3.connect(db_file)
+        logger.debug(f"Successfully connected to db: '{db_file}'")
         return conn
-    except (sqlite3.Error, ValueError) as e:
-        logger.error("Erro ao conectar ao banco de dados SQLite: %s", e)
+    except (sqlite3.Error, ValueError, OSError) as e:
+        logger.error("Erro ao conectar/criar o banco de dados SQLite '%s': %s", db_file, e)
     return conn
 
 
