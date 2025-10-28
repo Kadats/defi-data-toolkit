@@ -4,6 +4,7 @@ import pandas as pd
 from unittest.mock import MagicMock, call, patch
 from defi_data_toolkit.data_collector import (
     get_klines_from_api, get_fear_and_greed_index, get_uniswap_pool_daily_data,
+    fetch_all_klines,
     APIClient
 )
 
@@ -135,4 +136,50 @@ def test_get_uniswap_pool_daily_data_success(mock_thegraph_post):
     # Verifica se o cabeçalho de Autorização foi enviado
     assert 'Authorization' in kwargs['headers']
     assert kwargs['headers']['Authorization'] == f'Bearer {api_key}'
+
+def test_fetch_all_klines_looping(mocker):
+    """Testa se fetch_all_klines faz múltiplos pedidos para buscar todo o histórico."""
+    # 1. Arrange
+    symbol = "BTCUSDT"
+    interval = "1h"
+    start_ts_ms = 1672531200000 # 2023-01-01 00:00:00
+    end_ts_ms = 1672531200000 + (3 * 3600 * 1000) # 3 horas depois
+
+    # Simula a função get_klines_from_api (que fetch_all_klines chama internamente)
+    # Vamos fazer ela retornar diferentes dados em chamadas consecutivas
+    mock_get_klines = mocker.patch('defi_data_toolkit.data_collector.get_klines_from_api')
+
+    # Resposta da primeira chamada (simula buscar as últimas 2 horas)
+    response_1 = [
+        # Hora 2
+        [start_ts_ms + (2*3600*1000), "40500", "41500", "40000", "41000", "1200", start_ts_ms + (3*3600*1000)-1, "49200000", 120, "600", "24600000", "0"],
+        # Hora 1
+        [start_ts_ms + (1*3600*1000), "40000", "41000", "39000", "40500", "1000", start_ts_ms + (2*3600*1000)-1, "40500000", 100, "500", "20250000", "0"],
+    ]
+    # Resposta da segunda chamada (simula buscar a hora 0)
+    response_2 = [
+         # Hora 0
+        [start_ts_ms, "39500", "40000", "39000", "40000", "800", start_ts_ms + (1*3600*1000)-1, "31600000", 80, "400", "15800000", "0"],
+    ]
+
+    # Configura o mock para retornar as respostas em sequência
+    mock_get_klines.side_effect = [response_1, response_2, []] # A terceira chamada retorna vazio para parar o loop
+
+    # 2. Act
+    result_df = fetch_all_klines(symbol, interval, start_ts_ms, end_ts_ms, max_klines_per_request=2) # Limite pequeno para forçar o loop
+
+    # 3. Assert
+    # Verifica se o DataFrame resultante tem 3 linhas (3 horas)
+    assert isinstance(result_df, pd.DataFrame)
+    assert len(result_df) == 3
+    # Verifica se a função get_klines_from_api foi chamada 3 vezes
+    assert mock_get_klines.call_count == 2
+    # Verifica os argumentos da primeira chamada (busca a partir do end_timestamp)
+    mock_get_klines.assert_any_call(symbol, interval, 2, end_ts_ms, binance_api_base_url=None)
+    # Verifica os argumentos da segunda chamada (busca a partir do timestamp da vela mais antiga da primeira resposta)
+    expected_second_call_end_time = response_1[1][0] - 1 # Timestamp da hora 1 (mais antiga) menos 1ms
+    mock_get_klines.assert_any_call(symbol, interval, 2, expected_second_call_end_time, binance_api_base_url=None)
+    # Verifica a ordem das velas no resultado final (mais antiga primeiro)
+    assert result_df['Open_time'].iloc[0].value // 10**6 == start_ts_ms
+    assert result_df['Open_time'].iloc[2].value // 10**6 == start_ts_ms + (2*3600*1000)
 
