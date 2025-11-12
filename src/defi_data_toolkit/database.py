@@ -4,6 +4,7 @@ import os
 import time
 import logging
 from datetime import datetime, timedelta
+from typing import Optional
 
 logger = logging.getLogger(__name__)
 
@@ -11,7 +12,6 @@ logger = logging.getLogger(__name__)
 def _default_db_file() -> str:
     # Keep helper for callers that still want a default, but do not import config here.
     return os.path.abspath(os.path.join(os.getcwd(), 'backend', 'data', 'crypto_data.db'))
-
 
 def create_connection(db_file: str):
     """Cria uma conexão com o banco de dados SQLite especificado."""
@@ -37,15 +37,12 @@ def create_connection(db_file: str):
         logger.error("Erro ao conectar/criar o banco de dados SQLite '%s': %s", db_file, e)
     return conn
 
-
 def get_start_timestamp_for_collection(get_last_ts_func, table_name, db_file: str, historical_days):
     """Determina o timestamp de início para uma nova coleta de dados."""
     last_ts = get_last_ts_func(table_name, db_file)
     if last_ts:
         return last_ts
     return int((datetime.now() - timedelta(days=historical_days)).timestamp() * 1000)
-
-
 
 # Tabela Binance
 def create_table(conn: sqlite3.Connection, table_name: str):
@@ -216,7 +213,6 @@ def save_funding_rate_to_db(data: list, table_name: str, db_file: str):
             logger.error("Erro ao salvar dados de Funding Rate no banco de dados: %s", e)
         finally:
             conn.close()
-
        
 # Tabela Fear and Greed (F&G) Index
 def create_fng_table(conn: sqlite3.Connection, table_name: str):
@@ -303,7 +299,6 @@ def get_fng_data_from_db(table_name: str, db_file: str, limit: int = None) -> pd
             conn.close()
     return pd.DataFrame()
 
-
 # Tabela On-Chain Blockchair Bitcoin
 def create_on_chain_table(conn: sqlite3.Connection, table_name: str):
     """Cria uma tabela para armazenar dados on-chain."""
@@ -351,7 +346,6 @@ def save_on_chain_to_db(data: dict, table_name: str, db_file: str):
         finally:
             conn.close()
 
-
 # Tabela Implied Volatility (Deribit)
 def create_implied_volatility_table(conn: sqlite3.Connection, table_name: str):
     """Cria a tabela para armazenar a volatilidade implícita obtida da Deribit."""
@@ -367,7 +361,6 @@ def create_implied_volatility_table(conn: sqlite3.Connection, table_name: str):
         logger.info("Tabela '%s' verificada/criada com sucesso para Implied Volatility.", table_name)
     except sqlite3.Error as e:
         logger.error("Erro ao criar tabela '%s' para Implied Volatility: %s", table_name, e)
-
 
 def save_implied_volatility_to_db(data: list, table_name: str, db_file: str):
     """Salva uma lista de dicionários de volatilidade implícita no banco de dados.
@@ -398,7 +391,6 @@ def save_implied_volatility_to_db(data: list, table_name: str, db_file: str):
         finally:
             conn.close()
 
-
 def get_last_implied_volatility_timestamp_from_db(table_name: str, db_file: str) -> int:
     """Retorna o próximo timestamp (ms) a ser buscado para Implied Volatility, ou None."""
     conn = create_connection(db_file)
@@ -416,7 +408,6 @@ def get_last_implied_volatility_timestamp_from_db(table_name: str, db_file: str)
         finally:
             conn.close()
     return None
-
 
 def get_implied_volatility_data_from_db(table_name: str, db_file: str, limit: int = None) -> pd.DataFrame:
     """Carrega dados de Implied Volatility para um DataFrame ordenado por Timestamp asc."""
@@ -439,7 +430,6 @@ def get_implied_volatility_data_from_db(table_name: str, db_file: str, limit: in
             conn.close()
     return pd.DataFrame()
 
-
 # Tabela Uniswap Pool Data
 def create_uniswap_pool_table(conn: sqlite3.Connection, table_name: str):
     """Cria a tabela para armazenar poolDayData da Uniswap (volumeUSD e tvlUSD por dia)."""
@@ -456,7 +446,6 @@ def create_uniswap_pool_table(conn: sqlite3.Connection, table_name: str):
         logger.info("Tabela '%s' verificada/criada com sucesso para Uniswap Pool Data.", table_name)
     except sqlite3.Error as e:
         logger.error("Erro ao criar tabela '%s' para Uniswap Pool Data: %s", table_name, e)
-
 
 def save_uniswap_pool_data_to_db(data: list, table_name: str, db_file: str):
     """Salva uma lista de dicionários com chaves timestamp (ms), volumeUSD, tvlUSD."""
@@ -484,7 +473,6 @@ def save_uniswap_pool_data_to_db(data: list, table_name: str, db_file: str):
         finally:
             conn.close()
 
-
 def get_last_uniswap_timestamp_from_db(table_name: str, db_file: str) -> int:
     conn = create_connection(db_file)
     if conn:
@@ -501,7 +489,6 @@ def get_last_uniswap_timestamp_from_db(table_name: str, db_file: str) -> int:
         finally:
             conn.close()
     return None
-
 
 def get_uniswap_pool_data_from_db(table_name: str, db_file: str, limit: int = None) -> pd.DataFrame:
     conn = create_connection(db_file)
@@ -520,4 +507,89 @@ def get_uniswap_pool_data_from_db(table_name: str, db_file: str, limit: int = No
         finally:
             conn.close()
     return pd.DataFrame()
+
+# Tabela de Posições (Position Log)
+def create_positions_log_table(conn: sqlite3.Connection):
+    """
+    Cria a tabela 'positions_log' para rastrear LPs abertas e fechadas.
+    """
+    try:
+        cursor = conn.cursor()
+        cursor.execute(f"""
+            CREATE TABLE IF NOT EXISTS positions_log (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                open_timestamp INTEGER NOT NULL,
+                close_timestamp INTEGER,
+                strategy_used TEXT,
+                capital_allocated_usd REAL,
+                open_price REAL,
+                close_price REAL,
+                range_lower REAL,
+                range_upper REAL,
+                final_profit_usd REAL
+            )
+        """)
+        conn.commit()
+        logger.info("Tabela 'positions_log' verificada/criada com sucesso.")
+    except sqlite3.Error as e:
+        logger.error("Erro ao criar tabela 'positions_log': %s", e)
+
+def log_open_position(db_file: str, open_timestamp: int, strategy: str, capital_usd: float, open_price: float, range_lower: float, range_upper: float) -> Optional[int]:
+    """
+    Registra uma nova LP aberta no banco de dados e retorna o ID da posição.
+    """
+    conn = create_connection(db_file)
+    if not conn:
+        return None
+        
+    try:
+        # Garante que a tabela existe
+        create_positions_log_table(conn)
+        
+        cursor = conn.cursor()
+        sql = """
+            INSERT INTO positions_log (open_timestamp, strategy_used, capital_allocated_usd, open_price, range_lower, range_upper)
+            VALUES (?, ?, ?, ?, ?, ?)
+        """
+        cursor.execute(sql, (open_timestamp, strategy, capital_usd, open_price, range_lower, range_upper))
+        conn.commit()
+        
+        position_id = cursor.lastrowid
+        logger.info(f"Nova posição {position_id} registrada no 'positions_log'.")
+        return position_id
+        
+    except sqlite3.Error as e:
+        logger.error(f"Erro ao registrar abertura de posição no DB: {e}")
+        return None
+    finally:
+        if conn:
+            conn.close()
+
+def log_close_position(db_file: str, position_id: int, close_timestamp: int, close_price: float, final_profit: float):
+    """
+    Atualiza uma posição existente com dados de fechamento e lucro.
+    """
+    conn = create_connection(db_file)
+    if not conn:
+        return
+        
+    try:
+        cursor = conn.cursor()
+        sql = """
+            UPDATE positions_log
+            SET close_timestamp = ?,
+                close_price = ?,
+                final_profit_usd = ?
+            WHERE id = ?
+        """
+        cursor.execute(sql, (close_timestamp, close_price, final_profit, position_id))
+        conn.commit()
+        
+        logger.info(f"Posição {position_id} atualizada com dados de fechamento.")
+        
+    except sqlite3.Error as e:
+        logger.error(f"Erro ao registrar fechamento de posição no DB: {e}")
+    finally:
+        if conn:
+            conn.close()
 
