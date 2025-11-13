@@ -113,18 +113,27 @@ def get_last_timestamp_from_db(table_name: str, db_file: str) -> int:
             conn.close()
     return None
 
+
 def get_data_from_db(table_name: str, db_file: str, limit: int = None) -> pd.DataFrame:
     """Carrega dados de uma tabela SQLite para um DataFrame Pandas."""
     conn = create_connection(db_file)
     if conn:
         try:
-            query = f"SELECT * FROM {table_name} ORDER BY Open_time ASC"
+            # --- CORREÇÃO DA LÓGICA DE 'LIMIT' ---
+            # Se um limite for fornecido, queremos as N linhas MAIS RECENTES.
+            # Para fazer isso, selecionamos em ordem DECRESCENTE, aplicamos o limite,
+            # e depois reordenamos em ordem CRESCENTE no pandas.
+            
             if limit:
-                query += f" LIMIT {limit}"
+                # Seleciona as N mais recentes
+                query = f"SELECT * FROM (SELECT * FROM {table_name} ORDER BY Open_time DESC LIMIT {limit}) ORDER BY Open_time ASC"
+            else:
+                # Seleciona tudo
+                query = f"SELECT * FROM {table_name} ORDER BY Open_time ASC"
+            # --- FIM DA CORREÇÃO ---
                         
             df = pd.read_sql(query, conn) 
             
-            # Faça a conversão para datetime APÓS ler o DataFrame
             if not df.empty:
                 df['Open_time'] = pd.to_datetime(df['Open_time'], unit='ms')
                 df['Close_time'] = pd.to_datetime(df['Close_time'], unit='ms')
@@ -589,6 +598,59 @@ def log_close_position(db_file: str, position_id: int, close_timestamp: int, clo
         
     except sqlite3.Error as e:
         logger.error(f"Erro ao registrar fechamento de posição no DB: {e}")
+    finally:
+        if conn:
+            conn.close()
+
+
+# Tabela de Predições do Modelo de ML
+def create_ml_predictions_table(conn: sqlite3.Connection):
+    """
+    Cria a tabela 'ml_predictions' para armazenar os resultados do modelo.
+    """
+    try:
+        cursor = conn.cursor()
+        cursor.execute(f"""
+            CREATE TABLE IF NOT EXISTS ml_predictions (
+                Open_time INTEGER PRIMARY KEY,
+                prediction INTEGER,
+                prediction_correct INTEGER
+            )
+        """)
+        conn.commit()
+        logger.info("Tabela 'ml_predictions' verificada/criada com sucesso.")
+    except sqlite3.Error as e:
+        logger.error("Erro ao criar tabela 'ml_predictions': %s", e)
+
+def save_predictions_to_db(df: pd.DataFrame, db_file: str):
+    """
+    Salva as predições do modelo no banco de dados.
+    Usa 'replace' para sobrescrever dados antigos com o novo treinamento.
+    """
+    conn = create_connection(db_file)
+    if not conn:
+        return
+        
+    try:
+        create_ml_predictions_table(conn)
+        
+        # Seleciona apenas as colunas que precisamos
+        df_to_save = df.copy()
+        
+        # Converte Open_time para ms (INTEGER) para ser a KEY
+        df_to_save['Open_time'] = (df_to_save['Open_time'].values.astype(int) // 10**6).astype(int)
+        
+        # Seleciona apenas as colunas relevantes
+        df_to_save = df_to_save[['Open_time', 'prediction', 'prediction_correct']]
+        
+        # Salva no DB. 'replace' apaga a tabela antiga e insere os dados novos.
+        df_to_save.to_sql('ml_predictions', conn, if_exists='replace', index=False,
+                          dtype={'Open_time': 'INTEGER PRIMARY KEY'})
+        
+        logger.info(f"{len(df_to_save)} predições salvas na tabela 'ml_predictions'.")
+        
+    except Exception as e:
+        logger.error(f"Erro ao salvar predições no DB: {e}")
     finally:
         if conn:
             conn.close()
