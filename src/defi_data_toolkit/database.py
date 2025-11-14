@@ -119,7 +119,6 @@ def get_data_from_db(table_name: str, db_file: str, limit: int = None) -> pd.Dat
     conn = create_connection(db_file)
     if conn:
         try:
-            # --- CORREÇÃO DA LÓGICA DE 'LIMIT' ---
             # Se um limite for fornecido, queremos as N linhas MAIS RECENTES.
             # Para fazer isso, selecionamos em ordem DECRESCENTE, aplicamos o limite,
             # e depois reordenamos em ordem CRESCENTE no pandas.
