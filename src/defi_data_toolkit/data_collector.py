@@ -16,14 +16,7 @@ _DEFAULT_POLYGON_POOL_ID = "0x847b64f9d3a95e977d157866447a5c0a5dfa0ee5"
 
 
 class APIClient:
-    """HTTP client with Session, retries and exponential backoff.
-
-    This client is safe to reuse across calls and APIs. It mounts a
-    `HTTPAdapter` configured with `urllib3.util.Retry` so transient errors
-    (connection errors, timeouts, and 5xx responses) are retried using
-    exponential backoff.
-    """
-
+    """Cliente HTTP simples com suporte a retries e backoff exponencial."""
     def __init__(
         self,
         base_url: Optional[str] = None,
@@ -84,10 +77,6 @@ class APIClient:
                 sleep_for = self.backoff_factor * (2 ** (attempt - 1))
                 time.sleep(sleep_for)
                 continue
-
-
-# No module-level APIClient instances; callers must pass base_url and the client
-
 
 # Coletas Binance
 def get_klines_from_api(symbol: str, interval: str, limit: int = DEFAULT_KLINES_LIMIT, end_time: int = None, binance_api_base_url: str = None) -> list:
@@ -229,7 +218,6 @@ def get_open_interest(symbol: str, binance_futures_api_base_url: str = None) -> 
         logger.error("Erro ao conectar à API da Binance Futures para Open Interest (url=%s): %s", client._build_url(endpoint), e)
         return None
 
-
 # Coletas Fear and Greed Index
 def get_fear_and_greed_index(limit: int = 1, start_date_unix_sec: int = None, fng_api_url: str = None) -> list: # Modificado para retornar lista
     """
@@ -266,7 +254,6 @@ def get_fear_and_greed_index(limit: int = 1, start_date_unix_sec: int = None, fn
         logger.error("Erro ao conectar à API do Fear and Greed Index (url=%s): %s", client._build_url(base_url), e)
         return []
 
-
 # Coletas On-Chain Blockchair    
 def get_bitcoin_network_fees(blockchair_api_url: str = None) -> dict:
     """
@@ -297,95 +284,71 @@ def get_bitcoin_network_fees(blockchair_api_url: str = None) -> dict:
         logger.exception("Ocorreu um erro inesperado ao obter dados on-chain: %s", e)
         return None
 
-
 def get_implied_volatility_history(index_name: str = "BTC_DVOL", resolution: str = "1D", start_timestamp_ms: int = None, end_timestamp_ms: int = None, limit: int = 1000, deribit_base_url: Optional[str] = None) -> list:
-    """Busca o histórico de volatilidade implícita do índice Deribit (ex: BTC_DVOL).
-
-    Retorna uma lista de dicionários com chaves 'timestamp' (ms) e 'volatility'. Mantém assinatura
-    simples para não quebrar chamadas existentes.
-    """
+    """Busca o histórico de volatilidade implícita do índice Deribit (ex: BTC_DVOL)."""
     endpoint = "/public/get_volatility_index_data"
-    # Deribit expects 'index_name' as the parameter name
-    # Deribit requires a 'currency' parameter for many volatility endpoints (e.g. BTC_DVOL -> currency=BTC)
-    currency = None
-    if isinstance(index_name, str) and "_" in index_name:
-        currency = index_name.split("_")[0]
+    
+    # 1. Definir Currency obrigatoriamente
+    currency = "BTC"
+    if index_name.startswith("ETH"):
+        currency = "ETH"
+    
+    # 2. Definir End Timestamp obrigatoriamente (Se não passar, usa AGORA)
+    if end_timestamp_ms is None:
+        end_timestamp_ms = int(time.time() * 1000)
 
     params = {
         "index_name": index_name,
         "resolution": resolution,
+        "currency": currency,
+        "end_timestamp": int(end_timestamp_ms) # Obrigatório
     }
-    if currency:
-        params["currency"] = currency
+
     if start_timestamp_ms:
-        # Deribit API expects timestamps in milliseconds
         params["start_timestamp"] = int(start_timestamp_ms)
-    if end_timestamp_ms:
-        params["end_timestamp"] = int(end_timestamp_ms)
 
     if not deribit_base_url:
-        raise ValueError("deribit_base_url must be provided to get_implied_volatility_history")
+        raise ValueError("deribit_base_url must be provided")
+        
     base_url = deribit_base_url
     client = APIClient(base_url=base_url, timeout=10, max_retries=3, backoff_factor=1)
+    
     try:
         resp = client.get(endpoint, params=params)
-        try:
-            payload = resp.json()
-        except json.JSONDecodeError:
-            logger.error("Erro ao decodificar JSON da Deribit (IV): %s", resp.text)
-            return []
-
-        # payload format: {"jsonrpc":"2.0","result":{...}} or result directly
+        resp.raise_for_status()
+        
+        payload = resp.json()
         result = payload.get("result") if isinstance(payload, dict) else payload
+        
         if not result:
-            logger.error("Resposta inesperada da Deribit para IV: %s", payload)
             return []
 
-        # Deribit may return arrays of timestamps and values, a list of dicts, or a list-of-lists
+        # Formato de retorno da Deribit: {"data": [[timestamp, open, high, low, close], ...]}
         out = []
-        # Case A: result contains 'data' as list of dicts
-        if isinstance(result, dict) and "data" in result and isinstance(result["data"], list):
-            for item in result["data"]:
-                # item can be a dict or a list/tuple
-                if isinstance(item, dict):
-                    ts = item.get("timestamp") or item.get("t")
-                    vol = item.get("value") or item.get("volatility") or item.get("v")
-                elif isinstance(item, (list, tuple)) and len(item) >= 2:
-                    ts = item[0]
-                    # many Deribit volatility series return [timestamp, open, high, low, close]
-                    # so take the last element as the representative volatility value
-                    vol = item[-1]
-                else:
-                    continue
-
-                if ts is None or vol is None:
-                    continue
-                out.append({"timestamp": int(ts), "volatility": float(vol)})
-            return out
-
-        # Case B: result contains parallel arrays 'timestamps' and 'values' or 'values'
-        if isinstance(result, dict) and ("timestamps" in result and "values" in result):
-            ts_list = result.get("timestamps")
-            val_list = result.get("values")
-            for ts, val in zip(ts_list, val_list):
-                out.append({"timestamp": int(ts), "volatility": float(val)})
-            return out
-
-        # Case C: result itself is a list of {timestamp, value}
-        if isinstance(result, list):
-            for item in result:
-                ts = item.get("timestamp") or item.get("t")
-                vol = item.get("value") or item.get("volatility") or item.get("v")
-                if ts is None or vol is None:
-                    continue
-                out.append({"timestamp": int(ts), "volatility": float(vol)})
-            return out
-
-        # Fallback: unexpected format
-        logger.error("Formato inesperado de resposta Deribit (IV): %s", payload)
+        if isinstance(result, dict) and "data" in result:
+             for item in result["data"]:
+                 # item é uma lista: [timestamp, open, high, low, close]
+                 # Queremos o timestamp (0) e o close (4)
+                 if isinstance(item, list) and len(item) >= 5:
+                     ts = item[0]
+                     vol = item[4] 
+                     out.append({"timestamp": int(ts), "volatility": float(vol)})
+             return out
+             
         return []
+
+    except requests.exceptions.HTTPError as e:
+        # Log de erro detalhado
+        error_msg = "Erro desconhecido"
+        try:
+            error_msg = e.response.text
+        except:
+            pass
+        logger.error(f"Erro HTTP da Deribit: {e}. Body: {error_msg}")
+        return []
+        
     except requests.exceptions.RequestException as e:
-        logger.error("Erro ao conectar à API Deribit (IV) endpoint %s: %s", client._build_url(endpoint), e)
+        logger.error("Erro de conexão Deribit: %s", e)
         return []
 
 
