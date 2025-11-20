@@ -108,6 +108,9 @@ def fetch_all_klines(symbol: str, interval: str, start_timestamp: int, end_times
     """
     Coleta todas as velas entre start_timestamp e end_timestamp, lidando com o limite da API.
 
+    Implementa paginação robusta com logging de progresso, validação de resposta vazia,
+    e rate limiting para evitar bloqueio.
+
     Args:
         symbol (str): O par de trading (ex: "BTCUSDT").
         interval (str): O período da vela (ex: "1h", "1d").
@@ -120,10 +123,21 @@ def fetch_all_klines(symbol: str, interval: str, start_timestamp: int, end_times
     """
     all_data = []
     current_end_time = end_timestamp
+    batch_number = 0
+    total_klines_collected = 0
 
     while True:
+        batch_number += 1
+        
+        # Log do lote sendo coletado
+        batch_start_date = pd.to_datetime(current_end_time, unit='ms', utc=True).strftime('%Y-%m-%d %H:%M:%S UTC')
+        logger.info(f"Lote {batch_number}: Coletando {max_klines_per_request} velas até {batch_start_date}")
+        
         klines = get_klines_from_api(symbol, interval, max_klines_per_request, current_end_time, binance_api_base_url=binance_api_base_url)
+        
+        # Validação: resposta vazia interrompe o loop
         if not klines:
+            logger.info(f"Lote {batch_number}: Resposta vazia da API - finalizando coleta")
             break
 
         klines_df = pd.DataFrame(klines, columns=[
@@ -147,20 +161,34 @@ def fetch_all_klines(symbol: str, interval: str, start_timestamp: int, end_times
         klines_df = klines_df[klines_df['Open_time'] >= pd.to_datetime(start_timestamp, unit='ms')]
         
         if klines_df.empty:
+            logger.info(f"Lote {batch_number}: Nenhuma vela dentro da faixa de tempo especificada - finalizando coleta")
             break
+
+        batch_size = len(klines_df)
+        total_klines_collected += batch_size
+        earliest_date = klines_df['Open_time'].min().strftime('%Y-%m-%d %H:%M:%S')
+        latest_date = klines_df['Open_time'].max().strftime('%Y-%m-%d %H:%M:%S')
+        
+        logger.info(f"Lote {batch_number}: {batch_size} velas coletadas ({earliest_date} a {latest_date}) | Total: {total_klines_collected}")
 
         all_data.insert(0, klines_df)
         
         current_end_time = klines_df['Open_time'].min().value // 10**6 - 1
 
         if klines_df['Open_time'].min() <= pd.to_datetime(start_timestamp, unit='ms'):
+            logger.info(f"Lote {batch_number}: Atingido o timestamp inicial - finalizando coleta")
             break
 
-        time.sleep(0.1)
+        # Rate limiting to avoid API throttling
+        # Binance recommends at least 200ms between requests, we use 500ms to be safe
+        time.sleep(0.5)
 
     if all_data:
         final_df = pd.concat(all_data).drop_duplicates(subset=['Open_time']).sort_values('Open_time').reset_index(drop=True)
+        logger.info(f"✓ Coleta concluída: {len(final_df)} velas únicas no período de {final_df['Open_time'].min().strftime('%Y-%m-%d')} a {final_df['Open_time'].max().strftime('%Y-%m-%d')}")
         return final_df
+    
+    logger.warning(f"Nenhuma vela foi coletada para {symbol} {interval}")
     return pd.DataFrame()
 
 def get_funding_rate_history(symbol: str, limit: int = 100, binance_futures_api_base_url: str = None) -> list:
